@@ -295,14 +295,21 @@ variable "cloudflare_api_token" {
   default     = ""
   sensitive   = true
   description = <<-EOT
-    Cloudflare API token that manages the login wall and the login rate limit. Empty = skip them (do it by hand: see docs/DEPLOY.md).
-    Create it at dash.cloudflare.com > My Profile > API Tokens > Create Token > Custom token, with exactly these permissions:
-      Account | Access: Apps and Policies | Edit
-      Account | Access: Service Tokens    | Edit
+    Cloudflare API token that manages the login rate limit and, optionally, the Access login wall. Empty = skip both (do it by hand: see docs/DEPLOY.md).
+    Create it at dash.cloudflare.com > My Profile > API Tokens > Create Token > Custom token. For the rate limit alone:
       Zone    | Zone                      | Read
       Zone    | Zone WAF                  | Edit
-    Limit "Account Resources" to your account and "Zone Resources" to the zone that contains public_hostname.
+    For the login wall (enable_access_wall = true) also add:
+      Account | Access: Apps and Policies | Edit
+      Account | Access: Service Tokens    | Edit
+    Limit "Zone Resources" to the zone that contains public_hostname (and "Account Resources" to your account for the Access permissions).
   EOT
+}
+
+variable "enable_access_wall" {
+  type        = bool
+  default     = false
+  description = "Also create the Cloudflare Access login wall (needs access_emails and the two Access token permissions). Off: only the rate limit is managed."
 }
 
 variable "access_emails" {

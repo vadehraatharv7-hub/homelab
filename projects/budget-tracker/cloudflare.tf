@@ -1,5 +1,5 @@
-# Puts a login wall (Cloudflare Access) in front of the site and limits sign-in attempts. Everything here is skipped
-# unless cloudflare_api_token and public_hostname are set, so the rest of the stack works without it.
+# Limits sign-in attempts and, when enable_access_wall is true, puts a login wall (Cloudflare Access) in front of the site.
+# Everything here is skipped unless cloudflare_api_token and public_hostname are set, so the rest of the stack works without it.
 #
 #   visitor ──▶ Cloudflare ──▶ Access: sign in with a one-time PIN sent to access_emails ──▶ tunnel ──▶ app
 #   iOS Shortcuts ──▶ /api/shortcuts/* ──▶ Access: service token headers (no interactive login) ──▶ app (and its own API token)
@@ -8,12 +8,13 @@ locals {
   cf_enabled   = nonsensitive(var.cloudflare_api_token != "") && var.public_hostname != ""
   host_labels  = split(".", var.public_hostname)
   cf_zone_name = var.cloudflare_zone_name != "" ? var.cloudflare_zone_name : join(".", slice(local.host_labels, 1, length(local.host_labels)))
+  access_on    = local.cf_enabled && var.enable_access_wall
 }
 
 check "access_has_an_owner" {
   assert {
-    condition     = !local.cf_enabled || length(var.access_emails) > 0
-    error_message = "cloudflare_api_token is set, so access_emails must list who may sign in (otherwise nobody could reach the site)."
+    condition     = !local.access_on || length(var.access_emails) > 0
+    error_message = "enable_access_wall is true, so access_emails must list who may sign in (otherwise nobody could reach the site)."
   }
 }
 
@@ -23,13 +24,13 @@ data "cloudflare_zone" "this" {
 }
 
 locals {
-  cf_account_id = local.cf_enabled ? data.cloudflare_zone.this[0].account.id : ""
+  cf_account_id = local.access_on ? data.cloudflare_zone.this[0].account.id : ""
   cf_zone_id    = local.cf_enabled ? data.cloudflare_zone.this[0].zone_id : ""
 }
 
 # ---- who may sign in -------------------------------------------------------------------------------------------------
 resource "cloudflare_zero_trust_access_policy" "owner" {
-  count            = local.cf_enabled && length(var.access_emails) > 0 ? 1 : 0
+  count            = local.access_on ? 1 : 0
   account_id       = local.cf_account_id
   name             = "Budget: owner sign-in"
   decision         = "allow"
@@ -38,7 +39,7 @@ resource "cloudflare_zero_trust_access_policy" "owner" {
 }
 
 resource "cloudflare_zero_trust_access_application" "site" {
-  count                = local.cf_enabled && length(var.access_emails) > 0 ? 1 : 0
+  count                = local.access_on ? 1 : 0
   account_id           = local.cf_account_id
   name                 = "Budget"
   type                 = "self_hosted"
@@ -50,14 +51,14 @@ resource "cloudflare_zero_trust_access_application" "site" {
 
 # ---- iOS Shortcuts cannot do an interactive login, so /api/shortcuts/* accepts a service token instead ------------------
 resource "cloudflare_zero_trust_access_service_token" "shortcuts" {
-  count      = local.cf_enabled ? 1 : 0
+  count      = local.access_on ? 1 : 0
   account_id = local.cf_account_id
   name       = "Budget: iOS Shortcuts"
   duration   = "8760h" # one year; re-apply with -replace to rotate
 }
 
 resource "cloudflare_zero_trust_access_policy" "shortcuts" {
-  count      = local.cf_enabled ? 1 : 0
+  count      = local.access_on ? 1 : 0
   account_id = local.cf_account_id
   name       = "Budget: Shortcuts service token"
   decision   = "non_identity"
@@ -66,7 +67,7 @@ resource "cloudflare_zero_trust_access_policy" "shortcuts" {
 
 # More specific path, so it wins over the whole-site application above.
 resource "cloudflare_zero_trust_access_application" "shortcuts" {
-  count            = local.cf_enabled ? 1 : 0
+  count            = local.access_on ? 1 : 0
   account_id       = local.cf_account_id
   name             = "Budget: Shortcuts API"
   type             = "self_hosted"
