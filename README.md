@@ -1,14 +1,49 @@
 # Homelab
 
-Infrastructure for my Proxmox homelab: one folder per project, shared pieces in `shared/`.
+Infrastructure as code for my Proxmox homelab. It builds the servers behind
+[budget.atharvvadehra.dev](https://budget.atharvvadehra.dev) and a honeypot research platform, with Terraform, Ansible,
+Cloudflare and GitHub Actions. One folder per project, shared pieces in `shared/`.
+
+```mermaid
+flowchart LR
+  U[Users] -->|HTTPS| CF[Cloudflare<br/>TLS, WAF, rate limit]
+  CF --> T[Tunnel]
+  subgraph "Proxmox host (home network, no open ports)"
+    T --> LXC["LXC: budget-tracker<br/>cloudflared + Node app"]
+  end
+  GH[GitHub Actions] -->|Tailscale SSH, tag:ci| LXC
+  TF[Terraform on my Mac] -->|Proxmox API + SSH| LXC
+```
+
+## What this repository demonstrates
+
+| Skill | Where |
+|---|---|
+| **Terraform** against Proxmox, Cloudflare and a bootstrap script, with variables, locals, conditional resources and validated inputs | [`projects/budget-tracker`](projects/budget-tracker) |
+| **Zero open ports**: Cloudflare Tunnel for publishing, Tailscale SSH for deploys only | [Architecture](docs/ARCHITECTURE.md#networking) |
+| **Least privilege**: unprivileged LXC, a `deploy` user that can run one `sudo` command, a CI runner tagged `tag:ci` that can reach one port | [Architecture](docs/ARCHITECTURE.md#access-control) |
+| **Safe deploys**: build to a side directory, swap, health check, automatic rollback | [Architecture](docs/ARCHITECTURE.md#deploys) |
+| **Secret hygiene in a public repo**: git-ignored state, pre-commit hook, gitleaks in CI, GitHub push protection | [Security](#security-this-repository-is-public) |
+| **Ansible and network isolation**: VLAN-separated zones, hypervisor firewalls, hardening roles, a verification playbook | [`projects/honeypot`](projects/honeypot) |
+| **Documented trade-offs** and known gaps | [Architecture](docs/ARCHITECTURE.md#known-gaps) |
+
+Read next: **[Architecture and decisions](docs/ARCHITECTURE.md)**. The application itself is in the
+[budget-tracker repository](https://github.com/vadehraatharv7-hub/budget-tracker).
+
+## Projects
+
+| Project | What it is | Tools |
+|---|---|---|
+| [`budget-tracker`](projects/budget-tracker) | Creates an unprivileged Debian LXC, installs Node and the app, publishes it through a Cloudflare Tunnel, sets up CI deploy access and a login rate limit | Terraform (`telmate/proxmox`, `cloudflare`), Bash, systemd |
+| [`honeypot`](projects/honeypot) | Two honeypots, a dashboard and a MongoDB database in two isolated network zones | Terraform, Ansible, Proxmox firewall, XDP |
 
 ```
 Homelab/
+├── docs/ARCHITECTURE.md   how it fits together and why
 ├── projects/
-│   ├── honeypot/          Honeypot platform: Terraform (VMs, ISO, firewall) + Ansible (hardening, services) + deploy.sh
-│   └── budget-tracker/    Terraform: unprivileged LXC running the Budget Tracker PWA (GitHub Actions deploys to it)
-└── shared/
-    └── proxmox/           credential.auto.tfvars - the Proxmox API token every project reads (git-ignored, mode 600)
+│   ├── honeypot/          Terraform (VMs, ISO, firewall) + Ansible (hardening, services) + deploy.sh
+│   └── budget-tracker/    Terraform: unprivileged LXC running the Budget Tracker PWA
+└── shared/proxmox/        Proxmox API token every project reads (git-ignored, mode 600)
 ```
 
 ## Security: this repository is public
