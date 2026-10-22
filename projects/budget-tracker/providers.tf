@@ -17,6 +17,11 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    # Cloudflare Access (login wall) and the login rate limit; only used when cloudflare_api_token is set (see cloudflare.tf).
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
     # Asks the Proxmox host which Debian 12 template is currently published (see template.tf).
     external = {
       source  = "hashicorp/external"
@@ -33,4 +38,9 @@ provider "proxmox" {
   pm_api_token_id     = var.terraform_user
   pm_api_token_secret = var.terraform_token
   pm_tls_insecure     = var.pm_tls_insecure
+}
+
+# Token with permissions listed in cloudflare.tf. Empty = Cloudflare resources are skipped and a placeholder keeps the provider quiet.
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token != "" ? var.cloudflare_api_token : "0000000000000000000000000000000000000000"
 }

@@ -35,3 +35,14 @@ output "root_password" {
   sensitive   = true
   description = "Root password for the Proxmox console. Show with: terraform output -raw root_password"
 }
+
+output "shortcuts_access_client_id" {
+  value       = local.cf_enabled ? cloudflare_zero_trust_access_service_token.shortcuts[0].client_id : null
+  description = "Header CF-Access-Client-Id for the iOS Shortcut."
+}
+
+output "shortcuts_access_client_secret" {
+  value       = local.cf_enabled ? cloudflare_zero_trust_access_service_token.shortcuts[0].client_secret : null
+  sensitive   = true
+  description = "Header CF-Access-Client-Secret for the iOS Shortcut. Show with: terraform output -raw shortcuts_access_client_secret"
+}

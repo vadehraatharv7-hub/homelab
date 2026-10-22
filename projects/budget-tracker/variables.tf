@@ -287,3 +287,32 @@ variable "public_hostname" {
     error_message = "public_hostname must be a lower-case hostname such as budget.example.com (no scheme, no path)."
   }
 }
+
+# ---------------------------------------------------------------- Cloudflare Access and rate limit (cloudflare.tf)
+
+variable "cloudflare_api_token" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = <<-EOT
+    Cloudflare API token that manages the login wall and the login rate limit. Empty = skip them (do it by hand: see docs/DEPLOY.md).
+    Create it at dash.cloudflare.com > My Profile > API Tokens > Create Token > Custom token, with exactly these permissions:
+      Account | Access: Apps and Policies | Edit
+      Account | Access: Service Tokens    | Edit
+      Zone    | Zone                      | Read
+      Zone    | Zone WAF                  | Edit
+    Limit "Account Resources" to your account and "Zone Resources" to the zone that contains public_hostname.
+  EOT
+}
+
+variable "access_emails" {
+  type        = list(string)
+  default     = []
+  description = "Email addresses allowed through the Cloudflare Access login (a one-time PIN is sent to them). Required when the API token is set."
+}
+
+variable "cloudflare_zone_name" {
+  type        = string
+  default     = ""
+  description = "The Cloudflare zone (domain) public_hostname belongs to. Empty = public_hostname without its first label (budget.example.com -> example.com)."
+}
