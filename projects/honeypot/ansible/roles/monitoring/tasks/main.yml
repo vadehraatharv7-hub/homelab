@@ -1,0 +1,304 @@
+---
+# =========================================================================
+# 1. Base OS Packages & System Dependencies
+# =========================================================================
+- name: Install foundational packages and Nginx
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - git
+      - nginx
+      - wget
+      - fail2ban
+      - unattended-upgrades
+      - build-essential
+    state: present
+    update_cache: yes
+
+# =========================================================================
+# 2. Go Toolchain Installation
+# =========================================================================
+- name: Check the installed Go version
+  ansible.builtin.command: /usr/local/go/bin/go version
+  register: go_installed
+  changed_when: false
+  failed_when: false
+
+- name: Work out whether Go has to be (re)installed
+  ansible.builtin.set_fact:
+    go_needs_install: "{{ go_installed.rc != 0 or ('go' ~ go_version_wanted ~ ' ') not in go_installed.stdout }}"
+
+- name: Remove a Go installation of another version
+  ansible.builtin.file:
+    path: /usr/local/go
+    state: absent
+  when: go_needs_install
+
+- name: Download and extract the Go toolchain
+  ansible.builtin.unarchive:
+    src: "https://golang.org/dl/go{{ go_version_wanted }}.linux-amd64.tar.gz"
+    dest: /usr/local
+    remote_src: yes
+  when: go_needs_install
+
+- name: Add Go to global system PATH
+  ansible.builtin.copy:
+    dest: /etc/profile.d/golang.sh
+    content: 'export PATH=$PATH:/usr/local/go/bin'
+    mode: '0644'
+
+# =========================================================================
+# 3. Node.js & PM2 Installation
+# =========================================================================
+- name: Check if Node.js repository keyring exists
+  ansible.builtin.stat:
+    path: /etc/apt/keyrings/nodesource.gpg
+  register: nodesource_keyring
+
+- name: Add NodeSource signing key
+  ansible.builtin.shell: |
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  when: not nodesource_keyring.stat.exists
+
+- name: Add NodeSource repository (Node.js 20.x)
+  ansible.builtin.deb822_repository:
+    name: nodesource
+    types: [deb]
+    uris: [https://deb.nodesource.com/node_20.x]
+    suites: [nodistro]
+    components: [main]
+    signed_by: /etc/apt/keyrings/nodesource.gpg
+    state: present
+
+- name: Install Node.js
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: yes
+
+- name: Install PM2 globally
+  community.general.npm:
+    name: pm2
+    global: yes
+    state: present
+
+# =========================================================================
+# 4. Clone and Build SecDash (Backend & Frontend)
+# =========================================================================
+- name: Ensure app directory exists
+  ansible.builtin.file:
+    path: "{{ app_home }}/app"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0755'
+
+- name: Clone SecDash repository
+  ansible.builtin.git:
+    repo: https://github.com/vadehraatharv7-hub/sec_dash.git
+    dest: "{{ app_home }}/app/"
+    version: main
+    force: yes
+  become_user: "{{ app_user }}"
+
+- name: Clone SecDash locally on controller
+  ansible.builtin.git:
+    repo: https://github.com/vadehraatharv7-hub/sec_dash.git
+    dest: /tmp/sec_dash
+    version: main
+    force: yes
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Build Go backend binary locally on controller
+  ansible.builtin.shell:
+    cmd: go build -o api-server ./cmd/server
+    chdir: /tmp/sec_dash/backend
+  environment:
+    GOOS: linux
+    GOARCH: amd64
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Copy backend binary to monitoring VM
+  ansible.builtin.copy:
+    src: /tmp/sec_dash/backend/api-server
+    dest: "{{ app_home }}/app/backend/api-server"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0755'
+
+- name: Install frontend dependencies
+  community.general.npm:
+    path: "{{ app_home }}/app/frontend"
+  become_user: "{{ app_user }}"
+
+- name: Build React frontend production bundle
+  ansible.builtin.shell:
+    cmd: npm run build
+    chdir: "{{ app_home }}/app/frontend"
+  environment:
+    NODE_OPTIONS: "--max-old-space-size=1024"
+  become_user: "{{ app_user }}"
+
+# =========================================================================
+# 5. Process Management (PM2)
+# =========================================================================
+- name: Check running PM2 processes
+  ansible.builtin.command:
+    cmd: pm2 list
+  become_user: "{{ app_user }}"
+  register: pm2_status
+  changed_when: false
+
+- name: Wait for the database to accept connections
+  ansible.builtin.wait_for:
+    host: "{{ database_host }}"
+    port: 27017
+    timeout: 300
+  when: database_host is defined
+
+# The dashboard access token is generated once on the controller and kept in
+# ~/.secdash_token (mode 0600) so re-runs keep the same token.
+- name: Read or create the dashboard access token (on the controller)
+  ansible.builtin.set_fact:
+    secdash_token: "{{ lookup('ansible.builtin.password', lookup('ansible.builtin.env', 'HOME') + '/.secdash_token length=40 chars=ascii_letters,digits') }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# Admin account for the dashboard login. The password lives in
+# ~/.secdash_admin_password on the controller (mode 0600) and is written to the
+# VM's .env, where the backend applies it at startup.
+- name: Read or create the dashboard admin password (on the controller)
+  ansible.builtin.set_fact:
+    secdash_admin_password: "{{ lookup('ansible.builtin.password', lookup('ansible.builtin.env', 'HOME') + '/.secdash_admin_password length=24 chars=ascii_letters,digits') }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Read or create the sensor ingest key (on the controller)
+  ansible.builtin.set_fact:
+    secdash_ingest_key: "{{ lookup('ansible.builtin.password', lookup('ansible.builtin.env', 'HOME') + '/.secdash_ingest_key length=40 chars=ascii_letters,digits') }}"
+  no_log: true
+
+- name: Create .env file for Go backend
+  ansible.builtin.copy:
+    dest: "{{ app_home }}/app/backend/.env"
+    # MAX_EVENTS is sized for the 1 GB monitoring VM (about 45 MB per 100k events, plus cached analytics)
+    content: |
+      MONGO_URI={{ cosmos_db_uri }}
+      DASH_TOKEN={{ secdash_token }}
+      INGEST_TOKEN={{ secdash_ingest_key }}
+      DASH_ADMIN_USER=admin
+      DASH_ADMIN_PASSWORD={{ secdash_admin_password }}
+      MAX_EVENTS=100000
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0600'
+
+- name: Tell the operator where the dashboard token is
+  ansible.builtin.debug:
+    msg: "Dashboard login: user admin, password in ~/.secdash_admin_password (API token in ~/.secdash_token)"
+  run_once: true
+
+- name: Start or Restart Go backend in PM2
+  ansible.builtin.shell: |
+    if pm2 list | grep -q "go-backend"; then
+      pm2 restart go-backend
+    else
+      pm2 start {{ app_home }}/app/backend/api-server --name "go-backend" --cwd {{ app_home }}/app/backend
+    fi
+  become_user: "{{ app_user }}"
+
+- name: Start or Restart React frontend serving in PM2
+  ansible.builtin.shell: |
+    if pm2 list | grep -q "react-frontend"; then
+      pm2 restart react-frontend
+    else
+      pm2 serve {{ app_home }}/app/frontend/dist 3000 --name "react-frontend" --spa
+    fi
+  become_user: "{{ app_user }}"
+
+- name: Save PM2 process list
+  ansible.builtin.command: pm2 save
+  become_user: "{{ app_user }}"
+
+- name: Configure PM2 startup script
+  ansible.builtin.shell: "env PATH=$PATH:/usr/bin pm2 startup systemd -u {{ app_user }} --hp {{ app_home }}"
+  become: yes
+  become_user: root
+
+# =========================================================================
+# 6. Configure Nginx Reverse Proxy
+# =========================================================================
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: /etc/ssl/secdash
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Generate a self-signed TLS certificate for the dashboard
+  ansible.builtin.command: >-
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825
+    -keyout /etc/ssl/secdash/privkey.pem -out /etc/ssl/secdash/fullchain.pem
+    -subj "/CN=secdash"
+  args:
+    creates: /etc/ssl/secdash/fullchain.pem
+  notify: Reload Nginx
+
+- name: Restrict the TLS private key
+  ansible.builtin.file:
+    path: /etc/ssl/secdash/privkey.pem
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Ensure the nginx snippets directory exists
+  ansible.builtin.file:
+    path: /etc/nginx/snippets
+    state: directory
+    mode: '0755'
+
+- name: Deploy the dashboard proxy locations
+  ansible.builtin.template:
+    src: nginx_secdash_locations.conf.j2
+    dest: /etc/nginx/snippets/secdash_locations.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload Nginx
+
+- name: Deploy Nginx reverse proxy configuration
+  ansible.builtin.template:
+    src: nginx_secdash.conf.j2
+    dest: /etc/nginx/sites-available/default
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload Nginx
+
+- name: Ensure Nginx is running and enabled
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: yes
+- name: Ensure iptables PREROUTING rule exists for port 8081 to 8080
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: '8081'
+    jump: REDIRECT
+    to_ports: '8080'
+    state: present
+  become: yes
+  become_user: root

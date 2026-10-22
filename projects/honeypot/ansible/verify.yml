@@ -1,0 +1,241 @@
+---
+# Proves the deployment works AND that the isolation holds. Read-only: it creates nothing.
+# Any failed check stops the run with a message that says what is wrong.
+
+- name: Verify the database
+  hosts: database
+  become: true
+  gather_facts: false
+  tags: [verify]
+  tasks:
+    - name: MongoDB is running
+      ansible.builtin.command: systemctl is-active mongod
+      register: mongod_state
+      changed_when: false
+      failed_when: mongod_state.stdout != 'active'
+
+    - name: Anonymous access is refused (authentication is on)
+      ansible.builtin.command:
+        argv: [mongosh, --quiet, --host, 127.0.0.1, --eval, 'db.getSiblingDB("admin").runCommand({listDatabases: 1}).ok']
+      register: anon
+      changed_when: false
+      failed_when: anon.rc == 0
+
+    - name: The application account can log in
+      ansible.builtin.command:
+        argv: [mongosh, --quiet, --nodb]
+        stdin: |
+          const c = connect("mongodb://" + encodeURIComponent(process.env.APP_USER) + ":" + encodeURIComponent(process.env.APP_PW) +
+                            "@127.0.0.1:27017/" + process.env.APP_DB + "?authSource=" + process.env.APP_DB);
+          if (c.runCommand({ ping: 1 }).ok !== 1) { quit(1); }
+          print("app login ok");
+      environment:
+        APP_USER: "{{ mongo_app_user }}"
+        APP_PW: "{{ mongo_app_password }}"
+        APP_DB: "{{ mongo_db_name }}"
+      register: app_login
+      changed_when: false
+      failed_when: "'app login ok' not in app_login.stdout"
+      no_log: true
+
+- name: Verify the dashboard
+  hosts: monitoring
+  become: true
+  gather_facts: false
+  tags: [verify]
+  tasks:
+    - name: nginx is running
+      ansible.builtin.command: systemctl is-active nginx
+      register: nginx_state
+      changed_when: false
+      failed_when: nginx_state.stdout != 'active'
+
+    - name: The backend answers (it connected to the database, or it would have exited)
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/api/health
+        status_code: 200
+
+    - name: The API refuses anonymous reads
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/api/overview
+        status_code: 401
+
+    - name: Sensors cannot send events without the ingest key
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/api/ingest/stream
+        method: POST
+        body: '{"eventid": "verify.probe"}'
+        body_format: json
+        status_code: 401
+
+    - name: xdp-shield can read the ban list without a token
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8081/api/threats/banned
+        status_code: 200
+
+    - name: The dashboard is served over HTTPS
+      ansible.builtin.uri:
+        url: https://127.0.0.1/
+        validate_certs: false
+        status_code: 200
+
+- name: Verify the Cowrie honeypot
+  hosts: honeypot
+  become: true
+  gather_facts: false
+  tags: [verify]
+  tasks:
+    - name: Services are running
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      loop: [cowrie, vector, xpd-shield, fail2ban]
+      register: svc
+      changed_when: false
+      failed_when: svc.stdout != 'active'
+
+    - name: The SSH and Telnet decoys listen
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ item }}"
+        timeout: 30
+      loop: [2222, 2223]
+
+    - name: Ports 22 and 23 are redirected to the decoys
+      ansible.builtin.shell: iptables -t nat -S PREROUTING | grep -E -- '--dport (22|23) .*REDIRECT --to-ports (2222|2223)' | wc -l
+      register: redirects
+      changed_when: false
+      failed_when: redirects.stdout | int < 2
+
+    - name: The XDP filter is attached to eth0
+      ansible.builtin.shell: ip -d link show eth0 | grep -c xdp
+      register: xdp
+      changed_when: false
+      failed_when: xdp.stdout | int < 1
+
+    - name: The dashboard is reachable on 8081 (the only thing the honeypot may reach)
+      ansible.builtin.wait_for:
+        host: "{{ monitoring_private_ip }}"
+        port: 8081
+        timeout: 15
+
+    - name: ISOLATION - the honeypot cannot reach the database
+      ansible.builtin.wait_for:
+        host: "{{ database_host }}"
+        port: 27017
+        timeout: 6
+      register: reaches_db
+      ignore_errors: true
+    - name: ISOLATION - the honeypot cannot reach the dashboard's SSH
+      ansible.builtin.wait_for:
+        host: "{{ monitoring_private_ip }}"
+        port: 22222
+        timeout: 6
+      register: reaches_mon_ssh
+      ignore_errors: true
+    - name: ISOLATION - the honeypot cannot reach the dashboard's web UI
+      ansible.builtin.wait_for:
+        host: "{{ monitoring_private_ip }}"
+        port: 443
+        timeout: 6
+      register: reaches_mon_ui
+      ignore_errors: true
+    - name: ISOLATION - assert that every forbidden connection was blocked
+      ansible.builtin.assert:
+        that:
+          - reaches_db is failed
+          - reaches_mon_ssh is failed
+          - reaches_mon_ui is failed
+        fail_msg: >-
+          A honeypot can reach a protected service. Check that the Proxmox datacenter firewall is enabled
+          and that /etc/pve/firewall/{{ vmid }}.fw exists on the Proxmox host.
+        success_msg: "the honeypot is boxed in"
+
+- name: Verify the Snare honeypot
+  hosts: snare
+  become: true
+  gather_facts: false
+  tags: [verify]
+  tasks:
+    - name: The forwarder is running
+      ansible.builtin.command: systemctl is-active snare-forwarder
+      register: fwd
+      changed_when: false
+      failed_when: fwd.stdout != 'active'
+
+    - name: All four containers are up
+      ansible.builtin.shell: docker ps --filter status=running --format '{{ "{{.Names}}" }}' | wc -l
+      register: containers
+      changed_when: false
+      failed_when: containers.stdout | int != 4
+
+    - name: The decoy site answers and does not give the stack away
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        status_code: 200
+        return_content: false
+      register: site
+      failed_when: site.server | default('') != 'nginx' or site.set_cookie is defined
+
+    - name: The decoy site also answers over HTTPS
+      ansible.builtin.uri:
+        url: https://127.0.0.1/
+        validate_certs: false
+        status_code: 200
+
+    - name: The dashboard is reachable on 8081
+      ansible.builtin.wait_for:
+        host: "{{ monitoring_private_ip }}"
+        port: 8081
+        timeout: 15
+
+    - name: ISOLATION - the web honeypot cannot reach the database
+      ansible.builtin.wait_for:
+        host: "{{ database_host }}"
+        port: 27017
+        timeout: 6
+      register: reaches_db
+      ignore_errors: true
+    - name: ISOLATION - the web honeypot cannot reach the dashboard's SSH
+      ansible.builtin.wait_for:
+        host: "{{ monitoring_private_ip }}"
+        port: 22222
+        timeout: 6
+      register: reaches_mon_ssh
+      ignore_errors: true
+    - name: ISOLATION - assert that every forbidden connection was blocked
+      ansible.builtin.assert:
+        that:
+          - reaches_db is failed
+          - reaches_mon_ssh is failed
+        fail_msg: "Snare can reach a protected service. Check the Proxmox firewall for VM {{ vmid }}."
+        success_msg: "snare is boxed in"
+
+- name: Verify that the core zone does not accept connections from the honeypot zone
+  hosts: monitoring
+  gather_facts: false
+  tags: [verify]
+  tasks:
+    - name: ISOLATION - the dashboard cannot open the honeypots' admin SSH (only the admin network may)
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[groups['honeypot'][0]].ansible_host }}"
+        port: 22222
+        timeout: 6
+      register: mon_to_honeypot
+      ignore_errors: true
+    - name: ISOLATION - assert it was blocked
+      ansible.builtin.assert:
+        that: mon_to_honeypot is failed
+        fail_msg: "The dashboard VM can reach the honeypot's SSH: the honeypot's firewall is too open."
+        success_msg: "the honeypot accepts connections only from the admin network and the internet decoys"
+
+- name: Summary
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  tags: [verify]
+  tasks:
+    - name: Done
+      ansible.builtin.debug:
+        msg:
+          - "Deployment verified."
+          - "Dashboard: https://{{ hostvars[groups['monitoring'][0]].ansible_host }}  (user: admin, password in ~/.secdash_admin_password)"
+          - "Remember: router port forwards for 22/23 -> honeypot and 80/443 -> snare, and `enable_guest_agent = true` in Terraform."

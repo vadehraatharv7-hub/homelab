@@ -1,0 +1,11 @@
+# Managed by Ansible
+[DEFAULT]
+ignoreip = {{ common_fail2ban_ignore | unique | join(' ') }}
+
+[sshd]
+enabled = true
+port = {{ common_ssh_port }}
+logpath = /var/log/auth.log
+maxretry = {{ common_fail2ban_maxretry }}
+findtime = 600
+bantime = {{ common_fail2ban_bantime }}

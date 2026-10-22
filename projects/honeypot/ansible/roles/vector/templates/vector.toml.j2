@@ -1,0 +1,24 @@
+[sources.honeypot_json_logs]
+type = "file"
+include = [
+  "/var/log/honeypot/*.json",
+  "/home/cowrie/cowrie/var/log/cowrie/cowrie.json"
+]
+read_from = "beginning"
+
+[transforms.parse_json]
+type = "remap"
+inputs = ["honeypot_json_logs"]
+source = '''
+  . = parse_json!(.message)
+'''
+
+
+[sinks.realtime_dashboard]
+type = "http"
+inputs = ["parse_json"]
+uri = "http://{{ monitoring_private_ip | default('10.0.2.4') }}:8081/api/ingest/stream"
+encoding.codec = "json"
+
+[sinks.realtime_dashboard.request.headers]
+X-Ingest-Key = "${INGEST_KEY}"

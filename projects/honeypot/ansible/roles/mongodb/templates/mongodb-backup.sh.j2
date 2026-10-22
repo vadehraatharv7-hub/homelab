@@ -1,0 +1,8 @@
+#!/bin/sh
+# Managed by Ansible. Dumps the application database, keeps {{ mongodb_backup_keep_days }} days.
+set -eu
+. /etc/mongodb-backup.env
+mkdir -p "{{ mongodb_backup_dir }}"
+umask 077
+mongodump --quiet --uri="$MONGO_URI" --gzip --archive="{{ mongodb_backup_dir }}/{{ mongo_db_name }}-$(date +%F).archive.gz"
+find "{{ mongodb_backup_dir }}" -name '*.archive.gz' -mtime +{{ mongodb_backup_keep_days }} -delete

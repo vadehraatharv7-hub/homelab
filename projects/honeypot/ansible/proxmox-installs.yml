@@ -1,0 +1,74 @@
+---
+# Steps 1-2: finish the unattended Ubuntu installs that Terraform started.
+#
+# Terraform boots every VM from the installer ISO with an answers file attached. Ubuntu
+# asks one question ("Continue with autoinstall?") because the install wipes the disk.
+# Play 1 answers it on the Proxmox host with `qm sendkey`; play 2 waits until every
+# VM has installed itself, rebooted and answers on SSH.
+#
+# Safe to run again: VMs that already answer on SSH are left alone.
+
+- name: Answer the installer prompt on the Proxmox host
+  hosts: proxmox
+  gather_facts: false
+  become: "{{ ansible_user != 'root' }}"
+  tasks:
+    - name: Check which VMs already answer on SSH (these are installed)
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].ansible_host }}"
+        port: "{{ hostvars[item].ansible_port }}"
+        timeout: 3
+      delegate_to: localhost
+      become: false
+      loop: "{{ groups['vms'] }}"
+      register: ssh_probe
+      ignore_errors: true
+      changed_when: false
+
+    - name: Work out which VMs still have to be confirmed
+      ansible.builtin.set_fact:
+        pending_vms: "{{ ssh_probe.results | selectattr('failed') | map(attribute='item') | list }}"
+
+    - name: Show the plan
+      ansible.builtin.debug:
+        msg: "{{ 'Confirming the installer on: ' ~ (pending_vms | join(', ')) if pending_vms else 'Every VM already answers on SSH - nothing to confirm.' }}"
+
+    - name: Read each VM's state
+      ansible.builtin.command: "qm status {{ hostvars[item].vmid }}"
+      loop: "{{ pending_vms }}"
+      register: vm_status
+      changed_when: false
+
+    - name: Start VMs that are stopped
+      ansible.builtin.command: "qm start {{ hostvars[item.item].vmid }}"
+      loop: "{{ vm_status.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: "'stopped' in item.stdout"
+
+    - name: Give the installers time to reach the confirmation prompt
+      ansible.builtin.pause:
+        seconds: "{{ installer_wait_seconds }}"
+        prompt: "Waiting for the Ubuntu installers to reach the prompt ({{ installer_wait_seconds }} s)"
+      when: pending_vms | length > 0
+
+    - name: Type "yes" + Enter into each installer console
+      ansible.builtin.command: "qm sendkey {{ hostvars[item.0].vmid }} {{ item.1 }}"
+      loop: "{{ pending_vms | product(['y', 'e', 's', 'ret']) | list }}"
+      loop_control:
+        pause: 1
+        label: "{{ item.0 }}: {{ item.1 }}"
+      changed_when: true
+
+- name: Wait for the installs to finish
+  hosts: vms
+  gather_facts: false
+  tasks:
+    - name: Wait until the VM has installed itself and answers on SSH
+      ansible.builtin.wait_for_connection:
+        delay: 30
+        sleep: 15
+        timeout: "{{ install_timeout_seconds }}"
+
+    - name: Check that Ansible can log in and run Python
+      ansible.builtin.ping:

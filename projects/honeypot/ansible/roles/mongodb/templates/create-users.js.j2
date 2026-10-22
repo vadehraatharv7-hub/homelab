@@ -1,0 +1,13 @@
+// Creates (or updates) the two accounts. Passwords come from the environment, never from the command line.
+function ensureUser(database, name, pwd, roles) {
+  if (database.getUser(name)) {
+    database.updateUser(name, { pwd: pwd, roles: roles });
+  } else {
+    database.createUser({ user: name, pwd: pwd, roles: roles });
+  }
+}
+const adminDb = db.getSiblingDB("admin");
+ensureUser(adminDb, process.env.ADMIN_USER, process.env.ADMIN_PW, [{ role: "root", db: "admin" }]);
+ensureUser(db.getSiblingDB(process.env.APP_DB), process.env.APP_USER, process.env.APP_PW,
+           [{ role: "readWrite", db: process.env.APP_DB }]);
+print("users ready");

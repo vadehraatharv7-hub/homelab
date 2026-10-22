@@ -1,0 +1,50 @@
+---
+common_timezone: UTC
+
+# Install pending updates on the first run (and reboot if the kernel needs it).
+common_upgrade_packages: true
+common_reboot_if_required: true
+
+common_packages:
+  - ca-certificates
+  - curl
+  - python3
+  - rsyslog
+  - fail2ban
+  - unattended-upgrades
+
+# SSH. The port is set by the installer (Terraform); this role only hardens the daemon.
+common_ssh_port: 22222
+common_ssh_allow_users:
+  - "{{ ansible_user }}"
+
+# fail2ban: addresses that are never banned (your admin network, so a typo cannot lock you out).
+common_fail2ban_ignore:
+  - 127.0.0.1/8
+  - "{{ admin_cidr | default('127.0.0.1/8') }}"
+common_fail2ban_maxretry: 3
+common_fail2ban_bantime: 3600
+
+# Kernel hardening. Only settings that are safe next to Docker and the XDP filter.
+common_sysctl:
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv6.conf.all.accept_redirects: 0
+  net.ipv6.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.default.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.default.accept_source_route: 0
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.icmp_ignore_bogus_error_responses: 1
+  net.ipv4.tcp_syncookies: 1
+  net.ipv4.conf.all.log_martians: 1
+  kernel.kptr_restrict: 2
+  kernel.dmesg_restrict: 1
+  kernel.yama.ptrace_scope: 1
+  fs.suid_dumpable: 0
+  fs.protected_hardlinks: 1
+  fs.protected_symlinks: 1
+  vm.swappiness: 10

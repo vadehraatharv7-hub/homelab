@@ -1,0 +1,7 @@
+# Secrets and state live next to the Terraform; ignore them from here too.
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/credential.auto.tfvars
+terraform/terraform.tfvars
+terraform/inventory.ini
+ansible/*.retry

@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Secrets
+credential.auto.tfvars
+terraform.tfvars
+inventory.ini
+guest-agent.auto.tfvars

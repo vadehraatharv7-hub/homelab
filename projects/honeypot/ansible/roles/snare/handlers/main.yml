@@ -1,0 +1,11 @@
+---
+- name: Restart snare forwarder
+  systemd:
+    name: snare-forwarder
+    state: restarted
+    daemon_reload: yes
+
+- name: Restart snare stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_home }}/snare"
+    state: restarted

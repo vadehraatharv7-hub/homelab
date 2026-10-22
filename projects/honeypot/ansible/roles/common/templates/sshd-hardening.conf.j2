@@ -1,0 +1,13 @@
+# Managed by Ansible. Read before the main sshd_config (first value wins).
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+PermitEmptyPasswords no
+MaxAuthTries 3
+LoginGraceTime 30
+X11Forwarding no
+AllowAgentForwarding no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+LogLevel VERBOSE
+AllowUsers {{ common_ssh_allow_users | join(' ') }}

@@ -1,0 +1,13 @@
+---
+# Identity presented by the Cowrie SSH/Telnet decoy. Pick values that match each
+# other (an Ubuntu 22.04 OpenSSH banner with a 5.15 Ubuntu kernel) and change the
+# hostname per sensor so fingerprint lists cannot match on it.
+cowrie_hostname: web-prod-02
+cowrie_ssh_version: "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10"
+cowrie_ssh_client_version: "OpenSSH_8.9p1 Ubuntu-3ubuntu0.10, OpenSSL 3.0.2 15 Mar 2022"
+cowrie_kernel_version: "5.15.0-122-generic"
+cowrie_kernel_build: "#132-Ubuntu SMP Thu Aug 29 13:45:52 UTC 2024"
+# Max concurrent connections per source IP to the decoy ports
+cowrie_conn_limit: 30
+# Days to keep captured files, TTY recordings and rotated logs
+cowrie_retention_days: 21

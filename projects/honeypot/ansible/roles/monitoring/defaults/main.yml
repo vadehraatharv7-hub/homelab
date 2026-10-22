@@ -1,0 +1,7 @@
+---
+# Redirect plain HTTP to HTTPS. Leave false until you have accepted the self-signed certificate once
+# and confirmed that https://<dashboard> loads.
+secdash_force_https: false
+
+# Go toolchain installed on the monitoring VM (the backend itself is built on the controller).
+go_version_wanted: "1.27.1"

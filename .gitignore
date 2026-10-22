@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Terraform: provider caches and state never belong in git
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Secrets (each project's own .gitignore repeats the ones it uses)
+shared/**/credential.auto.tfvars
+**/credential.auto.tfvars
+**/terraform.tfvars
+**/guest-agent.auto.tfvars
+**/inventory.ini
+*.retry

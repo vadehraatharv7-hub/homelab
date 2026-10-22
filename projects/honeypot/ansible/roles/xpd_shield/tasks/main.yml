@@ -1,0 +1,40 @@
+- name: Build xpd-shield locally on the Ansible controller
+  command: go build -o xpd-shield .
+  args:
+    chdir: "{{ xdp_shield_src }}"
+  environment:
+    GOOS: linux
+    GOARCH: amd64
+  delegate_to: localhost
+  run_once: true
+  become: false
+  changed_when: false # the binary is copied below only when its content changed
+
+- name: Ensure /opt/xpd-shield directory exists
+  file:
+    path: /opt/xpd-shield
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Distribute compiled binary to honeypots
+  ansible.builtin.copy:
+    src: "{{ xdp_shield_src }}/xpd-shield"
+    dest: /opt/xpd-shield/xpd-shield
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create xpd-shield service file
+  template:
+    src: xpd-shield.service.j2
+    dest: /etc/systemd/system/xpd-shield.service
+  notify: restart xpd-shield
+
+- name: Ensure xpd-shield is enabled and started
+  systemd:
+    name: xpd-shield
+    state: started
+    enabled: yes
+    daemon_reload: yes

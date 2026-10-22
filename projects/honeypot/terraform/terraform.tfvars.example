@@ -1,0 +1,31 @@
+# Copy to terraform.tfvars and fill in. (terraform.tfvars is git-ignored.)
+# The API token itself stays in credential.auto.tfvars:
+#   terraform_user  = "terraform@pam!homelab"   # user@realm!tokenname
+#   terraform_token = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+pm_api_url      = "https://pve.lan:8006/api2/json"
+pm_tls_insecure = true          # only while Proxmox still uses its self-signed certificate
+pve_node        = "pve"         # Datacenter > your node's name
+
+iso_storage = "local"           # storage with the ISO content type
+vm_storage  = "local-lvm"
+
+# Zones. The bridge must be VLAN-aware, and your router needs the .1 address of each subnet.
+bridge    = "vmbr0"
+dmz_vlan  = 66                  # honeypots
+dmz_cidr  = "10.66.0.0/24"
+core_vlan = 67                  # dashboard + database
+core_cidr = "10.67.0.0/24"
+
+dns_server = "1.1.1.1"
+admin_cidr = "192.168.1.0/24"   # the network your workstation is on
+
+ssh_public_key_path  = "~/.ssh/id_rsa_azure.pub"
+ssh_private_key_path = "~/.ssh/id_rsa_azure"
+
+# Proxmox host SSH, used to write the per-VM firewall files (empty = host from pm_api_url, ssh-agent).
+# pve_ssh_user             = "root"
+# pve_ssh_private_key_path = "~/.ssh/id_ed25519"
+
+# After the installers have finished, set this to true and apply once more.
+enable_guest_agent = false

@@ -1,0 +1,220 @@
+---
+- name: Ensure Docker and dependencies are installed
+  apt:
+    name: ['docker.io', 'docker-compose-v2', 'python3-docker', 'curl', 'openssl', 'python3']
+    state: present
+    update_cache: yes
+
+# Shared secret the sensors send with every event (X-Ingest-Key). It is created
+# once on the controller in ~/.secdash_ingest_key (mode 0600) and reused.
+- name: Read or create the sensor ingest key (on the controller)
+  ansible.builtin.set_fact:
+    secdash_ingest_key: "{{ lookup('ansible.builtin.password', lookup('ansible.builtin.env', 'HOME') + '/.secdash_ingest_key length=40 chars=ascii_letters,digits') }}"
+  no_log: true
+
+- name: Ensure Snare working directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0755'
+  loop:
+    - "{{ app_home }}/snare"
+    - "{{ app_home }}/snare/certs"
+    - "{{ app_home }}/snare/nginx_logs"
+
+# The Tanner container runs as uid/gid 2000, so it only needs this directory to be
+# its own; world-writable is not required.
+- name: Create Tanner log directory owned by the container user
+  file:
+    path: "{{ app_home }}/snare/tanner_logs"
+    state: directory
+    owner: '2000'
+    group: '2000'
+    mode: '0750'
+
+# Browsers and scanners expect HTTPS on 443 next to HTTP on 80.
+- name: Generate a self-signed TLS certificate for the decoy site
+  command: >-
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825
+    -keyout {{ app_home }}/snare/certs/privkey.pem
+    -out {{ app_home }}/snare/certs/fullchain.pem
+    -subj "/O=Internet Widgits Pty Ltd/CN=localhost"
+  args:
+    creates: "{{ app_home }}/snare/certs/fullchain.pem"
+
+- name: Make the TLS key readable by the proxy container only
+  file:
+    path: "{{ app_home }}/snare/certs/privkey.pem"
+    owner: root
+    group: root
+    mode: '0644'
+
+# The proxy fronts Snare so that the response headers, 404 page and cookies do not
+# give the stack away (Snare/Tanner otherwise answer as "Python aiohttp", set a
+# sess_uuid cookie and serve a Tomcat 404 page behind a Bitnami landing page).
+# It also terminates TLS and records the real client address in its own log.
+- name: Deploy the front proxy configuration
+  copy:
+    dest: "{{ app_home }}/snare/nginx.conf"
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0644'
+    content: |
+      worker_processes 1;
+      pid /tmp/nginx.pid;
+      events { worker_connections 512; }
+      http {
+        server_tokens off;
+        client_max_body_size 1m;
+        limit_req_zone $binary_remote_addr zone=perip:10m rate=20r/s;
+        log_format hp '$remote_addr [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"';
+        access_log /var/log/nginx/access.log hp;
+        error_log /var/log/nginx/error.log warn;
+
+        server {
+          listen 80 default_server;
+          listen 443 ssl default_server;
+          ssl_certificate /etc/nginx/certs/fullchain.pem;
+          ssl_certificate_key /etc/nginx/certs/privkey.pem;
+          ssl_protocols TLSv1.2 TLSv1.3;
+
+          location / {
+            limit_req zone=perip burst=40 nodelay;
+            proxy_pass http://snare:80;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_hide_header Server;
+            proxy_hide_header Set-Cookie;
+            proxy_intercept_errors on;
+            error_page 404 = @notfound;
+          }
+
+          location @notfound {
+            default_type text/html;
+            return 404 '<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n';
+          }
+        }
+      }
+  notify: Restart snare stack
+
+# Images are pinned by digest: a mutable tag could change under the sensor.
+# Containers run without capabilities, with no privilege escalation and with
+# memory and process limits; only the proxy publishes ports.
+- name: Deploy Snare & Tanner Docker Compose File
+  copy:
+    dest: "{{ app_home }}/snare/docker-compose.yml"
+    content: |
+      services:
+        tanner_redis:
+          image: redis@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
+          restart: always
+          mem_limit: 64m
+          pids_limit: 100
+        tanner:
+          image: dtagdevsec/tanner@sha256:f8e083836ff93b591ee97c694aa7066dd5b84f8db3fdcd7568a757fbf5735c8e
+          restart: always
+          volumes:
+            - {{ app_home }}/snare/tanner_logs:/tmp/tanner
+          depends_on:
+            - tanner_redis
+          cap_drop: [ALL]
+          security_opt: ["no-new-privileges:true"]
+          mem_limit: 160m
+          pids_limit: 200
+        snare:
+          image: dtagdevsec/snare@sha256:acf836fd63dc6d5663b5e03782191ffa1c0eee2cfaed50c9e85513bcb288fa65
+          restart: always
+          expose: ["80"]
+          depends_on:
+            - tanner
+          cap_drop: [ALL]
+          security_opt: ["no-new-privileges:true"]
+          mem_limit: 160m
+          pids_limit: 200
+        front:
+          image: nginx:1.27-alpine
+          restart: always
+          ports:
+            - "80:80"
+            - "443:443"
+          volumes:
+            - {{ app_home }}/snare/nginx.conf:/etc/nginx/nginx.conf:ro
+            - {{ app_home }}/snare/certs:/etc/nginx/certs:ro
+            - {{ app_home }}/snare/nginx_logs:/var/log/nginx
+          depends_on:
+            - snare
+          read_only: true
+          tmpfs: ["/var/cache/nginx:rw,mode=1777", "/var/run:rw,mode=1777", "/tmp:rw,mode=1777"]
+          cap_drop: [ALL]
+          cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE]
+          security_opt: ["no-new-privileges:true"]
+          mem_limit: 64m
+          pids_limit: 100
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+  notify: Restart snare stack
+
+- name: Start Snare & Tanner Stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_home }}/snare"
+    state: present
+
+- name: Remove the old bash forwarder
+  file:
+    path: /usr/local/bin/snare-forwarder.sh
+    state: absent
+
+- name: Deploy Snare log forwarder (reads the proxy log, which carries the real client IP)
+  copy:
+    src: snare-forwarder.py
+    dest: /usr/local/bin/snare-forwarder.py
+    mode: '0755'
+  notify: Restart snare forwarder
+
+- name: Store the forwarder settings (ingest key) readable by root only
+  copy:
+    dest: /etc/default/snare-forwarder
+    content: |
+      SECDASH_INGEST_KEY={{ secdash_ingest_key }}
+      ACCESS_LOG={{ app_home }}/snare/nginx_logs/access.log
+      SECDASH_INGEST=http://{{ monitoring_private_ip | default('10.0.2.4') }}:8081/api/ingest/stream?sensor=vm-snare
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  notify: Restart snare forwarder
+
+- name: Deploy JSON Log Forwarder Service
+  copy:
+    dest: /etc/systemd/system/snare-forwarder.service
+    content: |
+      [Unit]
+      Description=Snare to SecDash log forwarder
+      After=docker.service
+
+      [Service]
+      Type=simple
+      User=root
+      EnvironmentFile=/etc/default/snare-forwarder
+      ExecStart=/usr/local/bin/snare-forwarder.py
+      Restart=always
+      RestartSec=3
+      NoNewPrivileges=yes
+      ProtectSystem=strict
+      ProtectHome=read-only
+      ReadWritePaths=/var/lib/snare-forwarder
+      StateDirectory=snare-forwarder
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart snare forwarder
+
+- name: Enable and start Snare Forwarder service
+  systemd:
+    name: snare-forwarder
+    state: started
+    enabled: yes
+    daemon_reload: yes

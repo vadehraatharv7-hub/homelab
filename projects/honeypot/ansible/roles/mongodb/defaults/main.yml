@@ -1,0 +1,27 @@
+---
+mongodb_version: "8.0"
+mongodb_port: 27017
+
+# Interface the server listens on besides localhost. The Proxmox firewall only lets the dashboard reach it.
+mongodb_bind_ip: "{{ ansible_default_ipv4.address }}"
+
+# WiredTiger cache in GB. The default of 50% of (RAM - 1 GB) is right for a 2 GB VM; raise it with more RAM.
+mongodb_cache_gb: 0.5
+
+# Accounts (set by Terraform in the inventory).
+mongo_admin_user: mongoadmin
+mongo_app_user: secdash
+mongo_db_name: honeypot_db
+
+# Daily dump to the local disk. Copy /var/backups/mongodb elsewhere for a real backup.
+mongodb_backup_enabled: true
+mongodb_backup_dir: /var/backups/mongodb
+mongodb_backup_keep_days: 7
+
+mongodb_hold_packages:
+  - mongodb-org
+  - mongodb-org-database
+  - mongodb-org-server
+  - mongodb-org-mongos
+  - mongodb-org-tools
+  - mongodb-mongosh

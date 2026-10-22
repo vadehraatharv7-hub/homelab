@@ -1,0 +1,24 @@
+# Managed by Ansible. Overrides cowrie.cfg.dist; every other option keeps its default.
+[honeypot]
+hostname = {{ cowrie_hostname }}
+# Attackers can otherwise make the sensor store large files
+download_limit_size = 5242880
+authentication_timeout = 60
+interactive_timeout = 180
+
+[shell]
+kernel_version = {{ cowrie_kernel_version }}
+kernel_build_string = {{ cowrie_kernel_build }}
+hardware_platform = x86_64
+operating_system = GNU/Linux
+ssh_version = {{ cowrie_ssh_client_version }}
+
+[ssh]
+version = {{ cowrie_ssh_version }}
+listen_endpoints = tcp:2222:interface=0.0.0.0
+
+# Telnet is the main entry point for IoT botnets (Mirai family). Port 23 is
+# redirected to 2223 by iptables.
+[telnet]
+enabled = true
+listen_endpoints = tcp:2223:interface=0.0.0.0

@@ -1,0 +1,13 @@
+[Unit]
+Description=xpd-shield eBPF Agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/xpd-shield/xpd-shield
+WorkingDirectory=/opt/xpd-shield
+Restart=on-failure
+Environment="API_URL=http://{{ monitoring_private_ip | default('10.0.2.4') }}:8081/api/threats/banned"
+
+[Install]
+WantedBy=multi-user.target

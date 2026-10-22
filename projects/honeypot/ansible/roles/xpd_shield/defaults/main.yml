@@ -1,0 +1,3 @@
+---
+# Directory with the xdp-shield Go sources, on the machine running Ansible.
+xdp_shield_src: "{{ playbook_dir }}/../../Multi_ML_HoneyPot/xdp-shield"

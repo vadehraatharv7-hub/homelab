@@ -1,0 +1,11 @@
+// Runs with administrator credentials once authentication is on: keeps the application account's
+// password equal to the one in the inventory (so rotating it is just a re-run).
+const conn = connect("mongodb://" + encodeURIComponent(process.env.ADMIN_USER) + ":" +
+                     encodeURIComponent(process.env.ADMIN_PW) + "@127.0.0.1:{{ mongodb_port }}/admin?authSource=admin");
+const appDb = conn.getSiblingDB(process.env.APP_DB);
+if (appDb.getUser(process.env.APP_USER)) {
+  appDb.updateUser(process.env.APP_USER, { pwd: process.env.APP_PW, roles: [{ role: "readWrite", db: process.env.APP_DB }] });
+} else {
+  appDb.createUser({ user: process.env.APP_USER, pwd: process.env.APP_PW, roles: [{ role: "readWrite", db: process.env.APP_DB }] });
+}
+print("app user synced");

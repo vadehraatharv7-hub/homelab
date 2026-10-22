@@ -1,0 +1,10 @@
+---
+- name: Reload Nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+
+- name: Restart PM2
+  ansible.builtin.command:
+    cmd: pm2 restart all
+  become_user: "{{ app_user }}"

@@ -1,0 +1,15 @@
+---
+# Variables shared by every play. Host-specific values (addresses, database passwords, ...)
+# come from the inventory that Terraform writes (../terraform/inventory.ini).
+
+# Account the applications run as. It is the administrator Terraform created on every VM.
+app_user: "{{ ansible_user }}"
+app_home: "/home/{{ app_user }}"
+
+# Where the xdp-shield sources live, relative to this directory.
+xdp_shield_src: "{{ playbook_dir }}/../../Multi_ML_HoneyPot/xdp-shield"
+
+# Seconds to wait after the VMs boot before confirming the Ubuntu installers (see proxmox-installs.yml).
+installer_wait_seconds: 180
+# How long to wait for each unattended install to finish and the VM to answer on SSH.
+install_timeout_seconds: 2400

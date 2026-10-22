@@ -1,0 +1,46 @@
+# Copy to terraform.tfvars and fill in. (terraform.tfvars is git-ignored.)
+# The API token stays in credential.auto.tfvars (symlinked from ../../shared/proxmox):
+#   terraform_user  = "terraform@pam!homelab"
+#   terraform_token = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+pm_api_url      = "https://pve.lan:8006/api2/json"
+pm_tls_insecure = true          # only while Proxmox still uses its self-signed certificate
+pve_node        = "pve"         # Datacenter > your node's name
+
+# --- Container -----------------------------------------------------------------------------
+ct_hostname      = "budget-tracker"
+template_storage = "local"      # storage with the "Container template" content type
+ct_storage       = "local-lvm"
+# ct_id          = 0            # 0 = next free VMID
+# ct_disk_gb     = 4
+# ct_memory_mb   = 512
+
+# --- Network (static: Terraform SSHes in to install the app) ------------------------------
+bridge     = "vmbr0"
+# vlan_id  = 0                  # 0 = untagged
+ip_cidr    = "192.168.1.50/24"
+gateway    = "192.168.1.1"
+dns_server = "1.1.1.1"
+
+# --- Access --------------------------------------------------------------------------------
+ssh_public_key_path  = "~/.ssh/id_rsa_azure.pub"
+ssh_private_key_path = "~/.ssh/id_rsa_azure"
+# pve_ssh_user             = "root"
+# pve_ssh_private_key_path = "~/.ssh/id_ed25519"   # empty = ssh-agent
+
+# --- The app ---------------------------------------------------------------------------------
+app_ref       = "main"          # branch, tag or commit; change it and apply to upgrade
+app_timezone  = "Europe/Copenhagen"
+vapid_subject = "mailto:you@example.com"
+# app_password = ""             # empty = random; read it with: terraform output -raw app_password
+# trust_proxy   = true          # when a reverse proxy / tailscale serve is in front
+# allowed_hosts = ["budget.example.com", "192.168.1.50"]
+
+# --- Cloudflare Tunnel: how the app is published to the internet (see docs/DEPLOY.md) --------------
+# Create the tunnel in Zero Trust > Networks > Tunnels, add a public hostname -> http://localhost:3000, copy its token.
+# Keep the token out of this file: put cloudflare_tunnel_token in credential.auto.tfvars (git-ignored).
+# public_hostname = "budget.example.com"
+
+# --- Tailscale: only so GitHub Actions can deploy over SSH (see docs/DEPLOY.md) ---------------------
+# tailscale_auth_key = "tskey-auth-..."   # tag:budget, pre-approved, one-off. Also best kept in credential.auto.tfvars.
+# tailscale_hostname = "budget-tracker"

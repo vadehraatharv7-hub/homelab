@@ -1,0 +1,33 @@
+add_header X-Content-Type-Options nosniff always;
+add_header X-Frame-Options DENY always;
+add_header Referrer-Policy no-referrer always;
+
+# React UI served by PM2
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_cache_bypass $http_upgrade;
+}
+
+# WebSocket live stream
+location /ws {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host 127.0.0.1:8080;
+    proxy_set_header Origin "http://127.0.0.1:8080";
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+}
+
+# REST API
+location /api/ {
+    proxy_pass http://127.0.0.1:8080/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host 127.0.0.1:8080;
+    proxy_set_header Origin "http://127.0.0.1:8080";
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}

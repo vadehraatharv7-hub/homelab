@@ -1,0 +1,192 @@
+---
+# MongoDB for the dashboard. Installed, bound to the private address, authentication on,
+# one administrator and one application account.
+
+- name: Check the platform
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+      - ansible_distribution_release == "jammy"
+    fail_msg: "This role installs MongoDB {{ mongodb_version }} from the Ubuntu 22.04 (jammy) repository."
+
+# MongoDB 5.0+ needs the AVX instruction set. A Proxmox VM only has it with CPU type "host" (Terraform sets that).
+- name: Check that the CPU has AVX
+  ansible.builtin.command: grep -qw avx /proc/cpuinfo
+  register: avx
+  changed_when: false
+  failed_when: false
+
+- name: Stop early if the CPU has no AVX
+  ansible.builtin.fail:
+    msg: "MongoDB {{ mongodb_version }} needs AVX. Set the VM's CPU type to 'host' in Proxmox and power-cycle the VM."
+  when: avx.rc != 0
+
+- name: Install MongoDB's repository tools
+  ansible.builtin.apt:
+    name: [gnupg, curl, ca-certificates]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Add the MongoDB package repository
+  ansible.builtin.deb822_repository:
+    name: "mongodb-org-{{ mongodb_version }}"
+    types: [deb]
+    uris: ["https://repo.mongodb.org/apt/ubuntu"]
+    suites: ["jammy/mongodb-org/{{ mongodb_version }}"]
+    components: [multiverse]
+    signed_by: "https://pgp.mongodb.com/server-{{ mongodb_version }}.asc"
+    state: present
+
+- name: Install MongoDB
+  ansible.builtin.apt:
+    name: mongodb-org
+    state: present
+    update_cache: true
+
+# An unattended upgrade must never move the database to another major version on its own.
+- name: Hold the MongoDB packages at the installed version
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ mongodb_hold_packages }}"
+
+# Authentication has to be off for the very first start so the first account can be created
+# (the account creation below needs no credentials); it is switched on right after.
+- name: Check whether the accounts were created already
+  ansible.builtin.stat:
+    path: /var/lib/mongodb/.accounts-created
+  register: accounts_marker
+
+- name: Remember whether authentication should be on
+  ansible.builtin.set_fact:
+    mongodb_auth_enabled: "{{ accounts_marker.stat.exists }}"
+
+- name: Configure MongoDB
+  ansible.builtin.template:
+    src: mongod.conf.j2
+    dest: /etc/mongod.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mongod
+
+- name: Start MongoDB
+  ansible.builtin.systemd:
+    name: mongod
+    enabled: true
+    state: started
+
+- name: Apply the configuration now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for MongoDB
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ mongodb_port }}"
+    timeout: 120
+
+- name: Create the administrator and the application account (first run only)
+  ansible.builtin.command:
+    argv: [mongosh, --quiet, --host, 127.0.0.1, --port, "{{ mongodb_port | string }}"]
+    stdin: "{{ lookup('ansible.builtin.template', 'create-users.js.j2') }}"
+  environment:
+    ADMIN_USER: "{{ mongo_admin_user }}"
+    ADMIN_PW: "{{ mongo_admin_password }}"
+    APP_USER: "{{ mongo_app_user }}"
+    APP_PW: "{{ mongo_app_password }}"
+    APP_DB: "{{ mongo_db_name }}"
+  no_log: true
+  when: not accounts_marker.stat.exists
+
+- name: Remember that the accounts exist
+  ansible.builtin.file:
+    path: /var/lib/mongodb/.accounts-created
+    state: touch
+    owner: mongodb
+    group: mongodb
+    mode: "0600"
+  when: not accounts_marker.stat.exists
+
+- name: Switch authentication on
+  ansible.builtin.set_fact:
+    mongodb_auth_enabled: true
+
+- name: Reconfigure MongoDB with authentication enabled
+  ansible.builtin.template:
+    src: mongod.conf.j2
+    dest: /etc/mongod.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mongod
+
+- name: Apply authentication now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for MongoDB to come back
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ mongodb_port }}"
+    timeout: 120
+
+- name: Keep the application account's password equal to the inventory's
+  ansible.builtin.command:
+    argv: [mongosh, --quiet, --nodb]
+    stdin: "{{ lookup('ansible.builtin.template', 'sync-app-user.js.j2') }}"
+  environment:
+    ADMIN_USER: "{{ mongo_admin_user }}"
+    ADMIN_PW: "{{ mongo_admin_password }}"
+    APP_USER: "{{ mongo_app_user }}"
+    APP_PW: "{{ mongo_app_password }}"
+    APP_DB: "{{ mongo_db_name }}"
+  no_log: true
+  changed_when: false
+
+# ---- backups
+- name: Store the backup connection string (administrator, readable by root only)
+  ansible.builtin.copy:
+    dest: /etc/mongodb-backup.env
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      MONGO_URI="mongodb://{{ mongo_admin_user | urlencode }}:{{ mongo_admin_password | urlencode }}@127.0.0.1:{{ mongodb_port }}/{{ mongo_db_name }}?authSource=admin"
+  no_log: true
+  when: mongodb_backup_enabled
+
+- name: Install the backup script
+  ansible.builtin.template:
+    src: mongodb-backup.sh.j2
+    dest: /usr/local/sbin/mongodb-backup.sh
+    owner: root
+    group: root
+    mode: "0750"
+  when: mongodb_backup_enabled
+
+- name: Schedule the daily backup
+  ansible.builtin.cron:
+    name: "mongodb backup"
+    minute: "30"
+    hour: "2"
+    user: root
+    job: /usr/local/sbin/mongodb-backup.sh
+  when: mongodb_backup_enabled
+
+- name: Rotate MongoDB's log
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/mongod
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      /var/log/mongodb/mongod.log {
+          daily
+          rotate 7
+          compress
+          missingok
+          notifempty
+          postrotate
+              /usr/bin/systemctl kill -s USR1 mongod >/dev/null 2>&1 || true
+          endscript
+      }

@@ -1,0 +1,51 @@
+---
+# Everything, from the Ubuntu installers to a verified deployment:
+#
+#   ansible-playbook site.yml
+#
+# 1. proxmox-installs.yml  confirm the unattended installs, wait for the VMs
+# 2. common                updates, SSH + kernel hardening, fail2ban, time (all VMs)
+# 3. database              MongoDB with authentication, backups
+# 4. monitoring            SecDash dashboard (needs the database)
+# 5. honeypot / snare      Cowrie + xdp-shield, Snare + proxy (need the dashboard)
+# 6. verify.yml            proves the services run AND that the zones are isolated
+#
+# Every step is idempotent: running it again changes nothing that is already right.
+
+- import_playbook: proxmox-installs.yml
+
+- name: Baseline hardening
+  hosts: vms
+  become: true
+  roles:
+    - common
+
+- name: Database
+  hosts: database
+  become: true
+  roles:
+    - mongodb
+
+- name: Dashboard
+  hosts: monitoring
+  become: true
+  roles:
+    - monitoring
+
+- name: Honeypot - Cowrie SSH/Telnet decoy
+  hosts: honeypot
+  become: true
+  roles:
+    - vector
+    - honeypot
+    - xpd_shield
+
+- name: Honeypot - Snare web decoy
+  hosts: snare
+  become: true
+  roles:
+    - vector
+    - snare
+    - xpd_shield
+
+- import_playbook: verify.yml

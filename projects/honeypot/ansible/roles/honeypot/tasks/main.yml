@@ -1,0 +1,235 @@
+---
+
+- name: Disable password auth
+  ansible.builtin.replace:
+    path: /etc/ssh/sshd_config
+    regexp: '^#*PasswordAuthentication .*'
+    replace: 'PasswordAuthentication no'
+  notify: Restart SSH
+
+- name: Disable root login
+  ansible.builtin.replace:
+    path: /etc/ssh/sshd_config
+    regexp: '^#*PermitRootLogin .*'
+    replace: 'PermitRootLogin no'
+  notify: Restart SSH
+
+- name: Create swap file if not exists
+  ansible.builtin.command: dd if=/dev/zero of=/swapfile bs=1M count=1024
+  args:
+    creates: /swapfile
+
+- name: Configure swap
+  ansible.builtin.shell: |
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+  when: ansible_swaptotal_mb == 0
+
+- name: Add swap to fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: '/swapfile none swap sw 0 0'
+    state: present
+
+- name: Add deadsnakes PPA for Python 3.11
+  ansible.builtin.apt_repository:
+    repo: ppa:deadsnakes/ppa
+    state: present
+
+- name: Install dependencies
+  ansible.builtin.apt:
+    name:
+      - software-properties-common
+      - iptables-persistent
+      - wget
+      - curl
+      - gpg
+      - python3.11
+      - python3.11-venv
+      - python3.11-dev
+      - python3-venv
+      - python3-dev
+      - git
+      - libssl-dev
+      - libffi-dev
+      - build-essential
+      - fail2ban
+      - unattended-upgrades
+    state: present
+    update_cache: yes
+
+- name: Configure fail2ban
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.local
+    content: |
+      [sshd]
+      enabled = true
+      port = 22222
+      filter = sshd
+      logpath = /var/log/auth.log
+      maxretry = 3
+      bantime = 3600
+  notify: Restart fail2ban
+
+- name: Enable unattended upgrades
+  ansible.builtin.shell: |
+    echo unattended-upgrades unattended-upgrades/enable_auto_updates boolean true | debconf-set-selections
+    dpkg-reconfigure -f noninteractive unattended-upgrades
+
+- name: Create cowrie group
+  ansible.builtin.group:
+    name: cowrie
+    state: present
+
+- name: Create cowrie user
+  ansible.builtin.user:
+    name: cowrie
+    group: cowrie
+    shell: /usr/sbin/nologin
+    create_home: yes
+    home: /home/cowrie
+
+- name: Add vector user to cowrie group for log access
+  ansible.builtin.user:
+    name: vector
+    groups: cowrie
+    append: yes
+  ignore_errors: yes
+
+- name: Ensure /home/cowrie has group execute permissions
+  ansible.builtin.file:
+    path: /home/cowrie
+    state: directory
+    mode: '0750'
+
+- name: Clone Cowrie
+  ansible.builtin.git:
+    repo: https://github.com/cowrie/cowrie.git
+    dest: /home/cowrie/cowrie
+  become_user: cowrie
+
+- name: Setup python env for cowrie
+  ansible.builtin.shell: |
+    python3.11 -m venv /home/cowrie/cowrie/cowrie-env
+    /home/cowrie/cowrie/cowrie-env/bin/pip install --upgrade pip setuptools wheel
+    /home/cowrie/cowrie/cowrie-env/bin/pip install -r /home/cowrie/cowrie/requirements.txt
+    /home/cowrie/cowrie/cowrie-env/bin/pip install /home/cowrie/cowrie
+  become_user: cowrie
+  args:
+    creates: /home/cowrie/cowrie/cowrie-env/bin/cowrie
+
+- name: Configure cowrie userdb
+  ansible.builtin.copy:
+    dest: /home/cowrie/cowrie/etc/userdb.txt
+    content: |
+      root:0:root
+      root:0:admin
+      root:0:password
+      root:0:123456
+      admin:500:admin
+      ubuntu:1000:ubuntu
+    owner: cowrie
+    group: cowrie
+
+- name: Redirect port 22 to 2222 for cowrie
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: 22
+    jump: REDIRECT
+    to_ports: 2222
+
+- name: Deploy Cowrie configuration (identity, Telnet, limits)
+  ansible.builtin.template:
+    src: cowrie.cfg.j2
+    dest: /home/cowrie/cowrie/etc/cowrie.cfg
+    owner: cowrie
+    group: cowrie
+    mode: '0644'
+  notify: Restart cowrie
+
+- name: Redirect port 23 to 2223 for cowrie telnet
+  ansible.builtin.iptables:
+    table: nat
+    chain: PREROUTING
+    protocol: tcp
+    destination_port: 23
+    jump: REDIRECT
+    to_ports: 2223
+
+# A single address cannot hold open an unbounded number of connections on the
+# 1 GB sensor. `-C` makes the rule idempotent.
+- name: Limit concurrent connections per source IP to the decoy ports
+  ansible.builtin.shell: |
+    for p in 2222 2223; do
+      iptables -C INPUT -p tcp --syn --dport $p -m connlimit --connlimit-above {{ cowrie_conn_limit }} --connlimit-mask 32 -j DROP 2>/dev/null \
+        || iptables -I INPUT 1 -p tcp --syn --dport $p -m connlimit --connlimit-above {{ cowrie_conn_limit }} --connlimit-mask 32 -j DROP
+    done
+  changed_when: false
+
+- name: Purge old captures, recordings and rotated logs (attackers control their size)
+  ansible.builtin.cron:
+    name: "Purge old cowrie captures"
+    minute: "30"
+    hour: "3"
+    user: root
+    job: >-
+      find /home/cowrie/cowrie/var/lib/cowrie/downloads /home/cowrie/cowrie/var/lib/cowrie/tty
+      -type f -mtime +{{ cowrie_retention_days }} -delete;
+      find /home/cowrie/cowrie/var/log/cowrie -name 'cowrie.json.*' -mtime +{{ cowrie_retention_days }} -delete
+
+- name: Save iptables
+  ansible.builtin.command: netfilter-persistent save
+
+- name: Deploy cowrie systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cowrie.service
+    content: |
+      [Unit]
+      Description=Cowrie SSH Honeypot Sandbox
+      After=network.target
+
+      [Service]
+      Type=forking
+      User=cowrie
+      Group=cowrie
+      WorkingDirectory=/home/cowrie/cowrie
+      PIDFile=/home/cowrie/cowrie/var/run/cowrie.pid
+
+      Environment="PATH=/home/cowrie/cowrie/cowrie-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      ExecStart=/home/cowrie/cowrie/cowrie-env/bin/cowrie start
+      ExecStop=/home/cowrie/cowrie/cowrie-env/bin/cowrie stop
+
+      Restart=always
+      RestartSec=5
+
+      NoNewPrivileges=yes
+      ProtectSystem=strict
+      ProtectHome=read-only
+      ReadWritePaths=/home/cowrie/cowrie/var /home/cowrie/cowrie/etc
+      PrivateTmp=yes
+      ProtectKernelTunables=yes
+      ProtectControlGroups=yes
+      RestrictSUIDSGID=yes
+      PrivateDevices=yes
+      ProtectKernelModules=yes
+      LockPersonality=yes
+      CapabilityBoundingSet=
+      RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+      # a connection flood must not take the whole 1 GB VM down
+      MemoryMax=450M
+      TasksMax=256
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart cowrie
+
+- name: Enable and start cowrie service
+  ansible.builtin.systemd:
+    name: cowrie
+    state: started
+    enabled: yes
+    daemon_reload: yes

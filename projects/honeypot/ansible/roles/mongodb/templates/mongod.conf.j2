@@ -1,0 +1,24 @@
+# Managed by Ansible
+storage:
+  dbPath: /var/lib/mongodb
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: {{ mongodb_cache_gb }}
+
+systemLog:
+  destination: file
+  logAppend: true
+  logRotate: reopen
+  path: /var/log/mongodb/mongod.log
+
+net:
+  port: {{ mongodb_port }}
+  bindIp: 127.0.0.1,{{ mongodb_bind_ip }}
+
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+{% if mongodb_auth_enabled | bool %}
+
+security:
+  authorization: enabled
+{% endif %}

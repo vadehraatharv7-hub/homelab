@@ -1,0 +1,58 @@
+---
+- name: Install curl
+  apt:
+    name: curl
+    state: present
+    update_cache: yes
+
+- name: Install Vector via direct DEB package
+  apt:
+    deb: https://packages.timber.io/vector/0.38.0/vector_0.38.0-1_amd64.deb
+    state: present
+
+- name: Ensure /etc/vector directory exists
+  file:
+    path: /etc/vector
+    state: directory
+    mode: '0755'
+
+- name: Copy Vector configuration
+  template:
+    src: vector.toml.j2
+    dest: /etc/vector/vector.toml
+    mode: '0644'
+  notify: Restart Vector
+
+# Shared secret the sensors send with every event (X-Ingest-Key). It is created
+# once on the controller in ~/.secdash_ingest_key (mode 0600) and reused.
+- name: Read or create the sensor ingest key (on the controller)
+  ansible.builtin.set_fact:
+    secdash_ingest_key: "{{ lookup('ansible.builtin.password', lookup('ansible.builtin.env', 'HOME') + '/.secdash_ingest_key length=40 chars=ascii_letters,digits') }}"
+  no_log: true
+
+# The database connection string is deliberately NOT written here: the sensors
+# are the most exposed machines and have no use for it.
+- name: Remove the database URI from Vector's environment, add the ingest key
+  copy:
+    dest: /etc/default/vector
+    content: |
+      INGEST_KEY="{{ secdash_ingest_key }}"
+      VECTOR_CONFIG="/etc/vector/vector.toml"
+    owner: root
+    group: vector
+    mode: '0640'
+  no_log: true
+  notify: Restart Vector
+
+- name: Remove default vector.yaml
+  file:
+    path: /etc/vector/vector.yaml
+    state: absent
+  notify: Restart Vector
+
+- name: Enable and start Vector service
+  systemd:
+    name: vector
+    state: started
+    enabled: yes
+    daemon_reload: yes
